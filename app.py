@@ -185,8 +185,8 @@ def index():
 @app.route("/api/download", methods=["POST"])
 def start_download():
     data = request.get_json()
-    url = data.get("url", "").strip()
-    password = data.get("password", "").strip() or None
+    url = (data.get("url") or "").strip()
+    password = (data.get("password") or "").strip() or None
 
     validated = parse_showcase_url(url)
     if not validated:
