@@ -57,6 +57,7 @@ def run_download(job_id, url, password=None):
         "yt-dlp",
         "--newline",
         "--restrict-filenames",
+        "--verbose",
         "-o", output_template,
         url,
     ]
@@ -174,6 +175,9 @@ def run_download(job_id, url, password=None):
         if "error" in line.lower():
             send("log", {"message": line})
             continue
+
+        # Log everything else so we can see what yt-dlp is doing
+        send("log", {"message": line})
 
     proc.wait(timeout=7200)
 
