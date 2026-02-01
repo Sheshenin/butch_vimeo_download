@@ -61,14 +61,14 @@ def run_download(job_id, url, password=None):
     try:
         result = subprocess.run(list_cmd, capture_output=True, text=True, timeout=120)
     except subprocess.TimeoutExpired:
-        send("error", {"message": "Таймаут при получении списка видео"})
+        send("job_error", {"message": "Таймаут при получении списка видео"})
         send("done", {"message": "Завершено с ошибкой"})
         job["status"] = "error"
         return
 
     if result.returncode != 0:
-        stderr = result.stderr.strip()
-        send("error", {"message": f"Ошибка получения списка: {stderr}"})
+        err_detail = (result.stderr or result.stdout or "").strip()
+        send("job_error", {"message": f"yt-dlp error: {err_detail[-500:]}"})
         send("done", {"message": "Завершено с ошибкой"})
         job["status"] = "error"
         return
@@ -87,7 +87,7 @@ def run_download(job_id, url, password=None):
             continue
 
     if not videos:
-        send("error", {"message": "Не найдено видео в showcase. Проверьте ссылку и пароль."})
+        send("job_error", {"message": "Не найдено видео в showcase. Проверьте ссылку и пароль."})
         send("done", {"message": "Завершено с ошибкой"})
         job["status"] = "error"
         return

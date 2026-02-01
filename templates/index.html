@@ -315,21 +315,28 @@ function connectSSE(jobId) {
         log(d.message);
     });
 
-    es.addEventListener('error_event', e => {
+    es.addEventListener('job_error', e => {
         const d = JSON.parse(e.data);
         log('ОШИБКА: ' + d.message, 'err');
+        document.getElementById('status-text').textContent = d.message;
     });
 
     es.addEventListener('done', e => {
         const d = JSON.parse(e.data);
         es.close();
         eventSource = null;
-        document.getElementById('progress-bar').style.width = '100%';
         document.getElementById('cancel-btn').style.display = 'none';
-        log(d.message, 'ok');
 
-        // Load files
-        loadFiles(jobId, d.message);
+        const isError = d.message.includes('ошибк') || d.message.includes('Отменено');
+        if (isError) {
+            document.getElementById('progress-bar').style.background = '#e74c3c';
+            log(d.message, 'err');
+            document.getElementById('status-text').textContent = d.message;
+        } else {
+            document.getElementById('progress-bar').style.width = '100%';
+            log(d.message, 'ok');
+            loadFiles(jobId, d.message);
+        }
     });
 
     es.addEventListener('ping', () => {});
