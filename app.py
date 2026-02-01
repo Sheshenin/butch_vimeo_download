@@ -54,7 +54,7 @@ def run_download(job_id, url, password=None):
     # Step 1: get list of videos
     send("status", {"message": "Получаю список видео из showcase..."})
 
-    list_cmd = ["yt-dlp", "--flat-playlist", "--dump-json", url]
+    list_cmd = ["yt-dlp", "--dump-single-json", "--flat-playlist", url]
     if password:
         list_cmd.extend(["--video-password", password])
 
@@ -73,21 +73,31 @@ def run_download(job_id, url, password=None):
         job["status"] = "error"
         return
 
+    # --dump-single-json returns one JSON object with "entries" array
     videos = []
-    for line in result.stdout.strip().split("\n"):
-        if not line.strip():
-            continue
+    stdout = result.stdout.strip()
+    if stdout:
         try:
-            info = json.loads(line)
-            videos.append({
-                "id": info.get("id", "unknown"),
-                "title": info.get("title", "Без названия"),
-            })
+            playlist_info = json.loads(stdout)
+            entries = playlist_info.get("entries", [])
+            if not entries and playlist_info.get("id"):
+                # Single video, not a playlist
+                entries = [playlist_info]
+            for entry in entries:
+                videos.append({
+                    "id": entry.get("id", "unknown"),
+                    "title": entry.get("title", "Без названия"),
+                    "url": entry.get("url", entry.get("webpage_url", "")),
+                })
         except json.JSONDecodeError:
-            continue
+            pass
 
     if not videos:
-        send("job_error", {"message": "Не найдено видео в showcase. Проверьте ссылку и пароль."})
+        stderr_hint = (result.stderr or "").strip()[-300:]
+        debug_msg = f"Не найдено видео. stdout={len(stdout)} bytes"
+        if stderr_hint:
+            debug_msg += f", stderr: {stderr_hint}"
+        send("job_error", {"message": debug_msg})
         send("done", {"message": "Завершено с ошибкой"})
         job["status"] = "error"
         return
@@ -112,26 +122,48 @@ def run_download(job_id, url, password=None):
         })
 
         output_template = os.path.join(job_dir, "%(title)s.%(ext)s")
-        dl_cmd = [
-            "yt-dlp",
-            "--newline",
-            "--no-warnings",
-            "-o", output_template,
-            "--restrict-filenames",
-            "--playlist-items", str(idx + 1),
-            url,
-        ]
+
+        # Prefer direct video URL if available, fall back to playlist-items
+        video_url = video.get("url", "")
+        if video_url and video["id"] != "unknown":
+            # Download individual video by its Vimeo URL
+            if not video_url.startswith("http"):
+                video_url = f"https://vimeo.com/{video['id']}"
+            dl_cmd = [
+                "yt-dlp",
+                "--newline",
+                "-o", output_template,
+                "--restrict-filenames",
+                video_url,
+            ]
+        else:
+            dl_cmd = [
+                "yt-dlp",
+                "--newline",
+                "-o", output_template,
+                "--restrict-filenames",
+                "--playlist-items", str(idx + 1),
+                url,
+            ]
         if password:
             dl_cmd.extend(["--video-password", password])
 
         try:
+            send("log", {"message": f"$ yt-dlp {video_url or url}"})
             proc = subprocess.Popen(
                 dl_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, bufsize=1,
             )
 
+            last_lines = []
             for line in proc.stdout:
                 line = line.strip()
+                if not line:
+                    continue
+                last_lines.append(line)
+                if len(last_lines) > 20:
+                    last_lines.pop(0)
+
                 pct_match = re.search(r"\[download\]\s+([\d.]+)%", line)
                 if pct_match:
                     pct = float(pct_match.group(1))
@@ -142,6 +174,8 @@ def run_download(job_id, url, password=None):
                         "percent": pct,
                         "detail": line,
                     })
+                elif "error" in line.lower() or "warning" in line.lower():
+                    send("log", {"message": line})
                 elif "[download]" in line.lower() or "[merger]" in line.lower():
                     send("log", {"message": line})
 
@@ -155,11 +189,12 @@ def run_download(job_id, url, password=None):
                 })
                 job["completed"] = job.get("completed", 0) + 1
             else:
+                err_output = "\n".join(last_lines[-5:])
                 send("video_error", {
                     "current": idx + 1,
                     "total": len(videos),
                     "title": video["title"],
-                    "message": "Ошибка при скачивании",
+                    "message": err_output or "Ошибка при скачивании",
                 })
 
         except Exception as e:
