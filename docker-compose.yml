@@ -1,0 +1,29 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    volumes:
+      - downloads:/app/downloads
+    environment:
+      - MAX_CONCURRENT_JOBS=3
+    networks:
+      - web
+
+  nginx:
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - downloads:/downloads:ro
+    depends_on:
+      - app
+    networks:
+      - web
+
+volumes:
+  downloads:
+
+networks:
+  web:

@@ -202,7 +202,10 @@
     <div class="card" id="files-section">
         <div class="done-msg" id="done-msg"></div>
         <ul class="file-list" id="file-list"></ul>
-        <button class="btn" style="margin-top: 16px;" onclick="resetForm()">Скачать другой showcase</button>
+        <div style="display: flex; gap: 12px; margin-top: 16px;">
+            <a class="btn" id="zip-btn" style="text-decoration:none;" href="#">Скачать все (ZIP)</a>
+            <button class="btn" style="background: #333;" onclick="resetForm()">Новый showcase</button>
+        </div>
     </div>
 
 <script>
@@ -343,6 +346,7 @@ function loadFiles(jobId, doneMessage) {
         if (data.files && data.files.length > 0) {
             document.getElementById('files-section').style.display = 'block';
             document.getElementById('done-msg').textContent = doneMessage;
+            document.getElementById('zip-btn').href = '/api/zip/' + jobId;
             const list = document.getElementById('file-list');
             list.innerHTML = '';
             data.files.forEach(f => {

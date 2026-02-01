@@ -5,6 +5,7 @@ import subprocess
 import re
 import threading
 import uuid
+import zipfile
 
 from flask import Flask, render_template, request, jsonify, Response, send_from_directory
 
@@ -13,12 +14,20 @@ app = Flask(__name__)
 DOWNLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "downloads")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
+MAX_CONCURRENT_JOBS = int(os.environ.get("MAX_CONCURRENT_JOBS", "3"))
+
 # Store active jobs: job_id -> {status, events_queue, videos, ...}
 jobs = {}
+jobs_lock = threading.Lock()
+
+
+def active_job_count():
+    with jobs_lock:
+        return sum(1 for j in jobs.values() if j["status"] == "running")
 
 
 def parse_showcase_url(url):
-    """Validate that the URL looks like a Vimeo showcase."""
+    """Validate that the URL looks like a Vimeo showcase/album/channel."""
     patterns = [
         r"https?://vimeo\.com/showcase/(\d+)",
         r"https?://vimeo\.com/channels/(\w+)",
@@ -42,22 +51,15 @@ def run_download(job_id, url, password=None):
     job_dir = os.path.join(DOWNLOAD_DIR, job_id)
     os.makedirs(job_dir, exist_ok=True)
 
-    # Step 1: get list of videos in the showcase
+    # Step 1: get list of videos
     send("status", {"message": "Получаю список видео из showcase..."})
 
-    list_cmd = [
-        "yt-dlp",
-        "--flat-playlist",
-        "--dump-json",
-        url,
-    ]
+    list_cmd = ["yt-dlp", "--flat-playlist", "--dump-json", url]
     if password:
         list_cmd.extend(["--video-password", password])
 
     try:
-        result = subprocess.run(
-            list_cmd, capture_output=True, text=True, timeout=120
-        )
+        result = subprocess.run(list_cmd, capture_output=True, text=True, timeout=120)
     except subprocess.TimeoutExpired:
         send("error", {"message": "Таймаут при получении списка видео"})
         send("done", {"message": "Завершено с ошибкой"})
@@ -80,7 +82,6 @@ def run_download(job_id, url, password=None):
             videos.append({
                 "id": info.get("id", "unknown"),
                 "title": info.get("title", "Без названия"),
-                "url": info.get("url", info.get("webpage_url", "")),
             })
         except json.JSONDecodeError:
             continue
@@ -95,7 +96,7 @@ def run_download(job_id, url, password=None):
     job["videos"] = videos
     send("playlist", {"total": len(videos), "videos": [v["title"] for v in videos]})
 
-    # Step 2: download each video
+    # Step 2: download each video using playlist-items filter
     for idx, video in enumerate(videos):
         if job.get("cancelled"):
             send("status", {"message": "Загрузка отменена"})
@@ -117,18 +118,6 @@ def run_download(job_id, url, password=None):
             "--no-warnings",
             "-o", output_template,
             "--restrict-filenames",
-            url if idx == 0 and len(videos) > 1 else f"https://vimeo.com/{video['id']}",
-        ]
-        if password:
-            dl_cmd.extend(["--video-password", password])
-
-        # For the whole playlist, download with playlist items filter
-        dl_cmd = [
-            "yt-dlp",
-            "--newline",
-            "--no-warnings",
-            "-o", output_template,
-            "--restrict-filenames",
             "--playlist-items", str(idx + 1),
             url,
         ]
@@ -138,12 +127,11 @@ def run_download(job_id, url, password=None):
         try:
             proc = subprocess.Popen(
                 dl_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=1
+                text=True, bufsize=1,
             )
 
             for line in proc.stdout:
                 line = line.strip()
-                # Parse yt-dlp progress like: [download]  45.2% of ~100MiB at 5.0MiB/s
                 pct_match = re.search(r"\[download\]\s+([\d.]+)%", line)
                 if pct_match:
                     pct = float(pct_match.group(1))
@@ -204,14 +192,18 @@ def start_download():
     if not validated:
         return jsonify({"error": "Неверная ссылка. Поддерживаются: vimeo.com/showcase/*, vimeo.com/album/*, vimeo.com/channels/*"}), 400
 
+    if active_job_count() >= MAX_CONCURRENT_JOBS:
+        return jsonify({"error": f"Сервер занят. Максимум {MAX_CONCURRENT_JOBS} одновременных загрузок. Попробуйте позже."}), 429
+
     job_id = uuid.uuid4().hex[:12]
-    jobs[job_id] = {
-        "status": "running",
-        "events": queue.Queue(),
-        "total": 0,
-        "completed": 0,
-        "videos": [],
-    }
+    with jobs_lock:
+        jobs[job_id] = {
+            "status": "running",
+            "events": queue.Queue(),
+            "total": 0,
+            "completed": 0,
+            "videos": [],
+        }
 
     thread = threading.Thread(target=run_download, args=(job_id, validated, password), daemon=True)
     thread.start()
@@ -230,7 +222,7 @@ def stream(job_id):
             try:
                 msg = q.get(timeout=30)
                 yield msg
-                if '"done"' in msg and "event: done" in msg:
+                if "event: done" in msg:
                     break
             except queue.Empty:
                 yield "event: ping\ndata: {}\n\n"
@@ -258,6 +250,24 @@ def list_files(job_id):
         if os.path.isfile(fp):
             files.append({"name": f, "size": os.path.getsize(fp)})
     return jsonify({"files": files})
+
+
+@app.route("/api/zip/<job_id>")
+def download_zip(job_id):
+    """Create and serve a ZIP archive of all downloaded videos."""
+    job_dir = os.path.join(DOWNLOAD_DIR, job_id)
+    if not os.path.isdir(job_dir):
+        return jsonify({"error": "Not found"}), 404
+
+    zip_path = os.path.join(DOWNLOAD_DIR, f"{job_id}.zip")
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_STORED) as zf:
+        for f in sorted(os.listdir(job_dir)):
+            fp = os.path.join(job_dir, f)
+            if os.path.isfile(fp):
+                zf.write(fp, f)
+
+    return send_from_directory(DOWNLOAD_DIR, f"{job_id}.zip", as_attachment=True,
+                               download_name="vimeo_showcase.zip")
 
 
 @app.route("/downloads/<job_id>/<filename>")
