@@ -16,7 +16,6 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 MAX_CONCURRENT_JOBS = int(os.environ.get("MAX_CONCURRENT_JOBS", "3"))
 
-# Store active jobs: job_id -> {status, events_queue, videos, ...}
 jobs = {}
 jobs_lock = threading.Lock()
 
@@ -41,7 +40,7 @@ def parse_showcase_url(url):
 
 
 def run_download(job_id, url, password=None):
-    """Run yt-dlp in a subprocess and stream progress via SSE."""
+    """Run yt-dlp on the full showcase URL and parse progress from output."""
     job = jobs[job_id]
     q = job["events"]
 
@@ -51,165 +50,146 @@ def run_download(job_id, url, password=None):
     job_dir = os.path.join(DOWNLOAD_DIR, job_id)
     os.makedirs(job_dir, exist_ok=True)
 
-    # Step 1: get list of videos
-    send("status", {"message": "Получаю список видео из showcase..."})
+    send("status", {"message": "Запускаю скачивание showcase..."})
 
-    list_cmd = ["yt-dlp", "--dump-single-json", url]
+    output_template = os.path.join(job_dir, "%(title)s.%(ext)s")
+    dl_cmd = [
+        "yt-dlp",
+        "--newline",
+        "--restrict-filenames",
+        "-o", output_template,
+        url,
+    ]
     if password:
-        list_cmd.extend(["--video-password", password])
+        dl_cmd.extend(["--video-password", password])
 
     try:
-        result = subprocess.run(list_cmd, capture_output=True, text=True, timeout=600)
-    except subprocess.TimeoutExpired:
-        send("job_error", {"message": "Таймаут при получении списка видео"})
+        proc = subprocess.Popen(
+            dl_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1,
+        )
+    except Exception as e:
+        send("job_error", {"message": f"Не удалось запустить yt-dlp: {e}"})
         send("done", {"message": "Завершено с ошибкой"})
         job["status"] = "error"
         return
 
-    if result.returncode != 0:
-        err_detail = (result.stderr or result.stdout or "").strip()
-        send("job_error", {"message": f"yt-dlp error: {err_detail[-500:]}"})
-        send("done", {"message": "Завершено с ошибкой"})
-        job["status"] = "error"
-        return
+    current_video = None
+    video_num = 0
+    completed = 0
+    last_lines = []
 
-    # --dump-single-json returns one JSON object with "entries" array
-    videos = []
-    stdout = result.stdout.strip()
-    if stdout:
-        try:
-            playlist_info = json.loads(stdout)
-            entries = playlist_info.get("entries", [])
-            if not entries and playlist_info.get("id"):
-                # Single video, not a playlist
-                entries = [playlist_info]
-            for entry in entries:
-                videos.append({
-                    "id": entry.get("id", "unknown"),
-                    "title": entry.get("title", "Без названия"),
-                    "url": entry.get("url", entry.get("webpage_url", "")),
-                })
-        except json.JSONDecodeError:
-            pass
+    for line in proc.stdout:
+        line = line.strip()
+        if not line:
+            continue
+        last_lines.append(line)
+        if len(last_lines) > 50:
+            last_lines.pop(0)
 
-    if not videos:
-        stderr_hint = (result.stderr or "").strip()[-300:]
-        debug_msg = f"Не найдено видео. stdout={len(stdout)} bytes"
-        if stderr_hint:
-            debug_msg += f", stderr: {stderr_hint}"
-        send("job_error", {"message": debug_msg})
-        send("done", {"message": "Завершено с ошибкой"})
-        job["status"] = "error"
-        return
-
-    job["total"] = len(videos)
-    job["videos"] = videos
-    send("playlist", {"total": len(videos), "videos": [v["title"] for v in videos]})
-
-    # Step 2: download each video using playlist-items filter
-    for idx, video in enumerate(videos):
         if job.get("cancelled"):
+            proc.terminate()
             send("status", {"message": "Загрузка отменена"})
             job["status"] = "cancelled"
             send("done", {"message": "Отменено"})
             return
 
-        send("progress", {
-            "current": idx + 1,
-            "total": len(videos),
-            "title": video["title"],
-            "percent": 0,
-        })
+        # Detect new video: [download] Downloading item N of M
+        item_match = re.search(
+            r"\[download\]\s+Downloading\s+item\s+(\d+)\s+of\s+(\d+)", line, re.IGNORECASE
+        )
+        if item_match:
+            video_num = int(item_match.group(1))
+            total = int(item_match.group(2))
+            job["total"] = total
+            send("status", {"message": f"Видео {video_num} из {total}"})
+            send("log", {"message": line})
+            continue
 
-        output_template = os.path.join(job_dir, "%(title)s.%(ext)s")
-
-        # Prefer direct video URL if available, fall back to playlist-items
-        video_url = video.get("url", "")
-        if video_url and video["id"] != "unknown":
-            # Download individual video by its Vimeo URL
-            if not video_url.startswith("http"):
-                video_url = f"https://vimeo.com/{video['id']}"
-            dl_cmd = [
-                "yt-dlp",
-                "--newline",
-                "-o", output_template,
-                "--restrict-filenames",
-                video_url,
-            ]
-        else:
-            dl_cmd = [
-                "yt-dlp",
-                "--newline",
-                "-o", output_template,
-                "--restrict-filenames",
-                "--playlist-items", str(idx + 1),
-                url,
-            ]
-        if password:
-            dl_cmd.extend(["--video-password", password])
-
-        try:
-            send("log", {"message": f"$ yt-dlp {video_url or url}"})
-            proc = subprocess.Popen(
-                dl_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=1,
-            )
-
-            last_lines = []
-            for line in proc.stdout:
-                line = line.strip()
-                if not line:
-                    continue
-                last_lines.append(line)
-                if len(last_lines) > 20:
-                    last_lines.pop(0)
-
-                pct_match = re.search(r"\[download\]\s+([\d.]+)%", line)
-                if pct_match:
-                    pct = float(pct_match.group(1))
-                    send("progress", {
-                        "current": idx + 1,
-                        "total": len(videos),
-                        "title": video["title"],
-                        "percent": pct,
-                        "detail": line,
-                    })
-                elif "error" in line.lower() or "warning" in line.lower():
-                    send("log", {"message": line})
-                elif "[download]" in line.lower() or "[merger]" in line.lower():
-                    send("log", {"message": line})
-
-            proc.wait(timeout=3600)
-
-            if proc.returncode == 0:
-                send("video_done", {
-                    "current": idx + 1,
-                    "total": len(videos),
-                    "title": video["title"],
-                })
-                job["completed"] = job.get("completed", 0) + 1
-            else:
-                err_output = "\n".join(last_lines[-5:])
-                send("video_error", {
-                    "current": idx + 1,
-                    "total": len(videos),
-                    "title": video["title"],
-                    "message": err_output or "Ошибка при скачивании",
-                })
-
-        except Exception as e:
-            send("video_error", {
-                "current": idx + 1,
-                "total": len(videos),
-                "title": video["title"],
-                "message": str(e),
+        # Detect video title: [download] Destination: /path/to/Title.ext
+        dest_match = re.search(r"\[download\]\s+Destination:\s+(.+)", line)
+        if dest_match:
+            filepath = dest_match.group(1)
+            basename = os.path.basename(filepath)
+            name_without_ext = os.path.splitext(basename)[0]
+            current_video = name_without_ext
+            send("progress", {
+                "current": video_num or (completed + 1),
+                "total": job.get("total", 0),
+                "title": current_video,
+                "percent": 0,
             })
+            send("log", {"message": line})
+            continue
 
-    send("done", {
-        "message": f"Готово! Скачано {job.get('completed', 0)} из {len(videos)} видео.",
-        "path": job_dir,
-    })
-    job["status"] = "done"
+        # Detect video info line: [VimeoShowcase] ... Downloading JSON metadata
+        # or [Vimeo] <id>: Downloading ...
+        vimeo_match = re.search(r"\[(?:Vimeo|VimeoShowcase)[^\]]*\]\s+(.+)", line)
+        if vimeo_match:
+            send("log", {"message": line})
+            continue
+
+        # Progress: [download]  45.2% of ~100MiB at 5.0MiB/s
+        pct_match = re.search(r"\[download\]\s+([\d.]+)%", line)
+        if pct_match:
+            pct = float(pct_match.group(1))
+            send("progress", {
+                "current": video_num or (completed + 1),
+                "total": job.get("total", 0),
+                "title": current_video or f"Видео {video_num or completed + 1}",
+                "percent": pct,
+                "detail": line,
+            })
+            continue
+
+        # Download complete: [download] 100% ...  or already downloaded
+        if re.search(r"\[download\]\s+100%", line) or "has already been downloaded" in line:
+            if "already been downloaded" in line:
+                send("log", {"message": line})
+            completed += 1
+            job["completed"] = completed
+            send("video_done", {
+                "current": video_num or completed,
+                "total": job.get("total", 0),
+                "title": current_video or f"Видео {completed}",
+            })
+            current_video = None
+            continue
+
+        # Merger
+        if "[merger]" in line.lower():
+            send("log", {"message": line})
+            # After merge, that video is done
+            completed += 1
+            job["completed"] = completed
+            send("video_done", {
+                "current": video_num or completed,
+                "total": job.get("total", 0),
+                "title": current_video or f"Видео {completed}",
+            })
+            current_video = None
+            continue
+
+        # Errors from yt-dlp
+        if "error" in line.lower():
+            send("log", {"message": line})
+            continue
+
+    proc.wait(timeout=7200)
+
+    if proc.returncode == 0:
+        # Count actual files downloaded
+        files_count = sum(1 for f in os.listdir(job_dir) if os.path.isfile(os.path.join(job_dir, f)))
+        send("done", {
+            "message": f"Готово! Скачано {files_count} видео.",
+            "path": job_dir,
+        })
+        job["status"] = "done"
+    else:
+        err_tail = "\n".join(last_lines[-10:])
+        send("job_error", {"message": f"yt-dlp завершился с ошибкой:\n{err_tail}"})
+        send("done", {"message": "Завершено с ошибкой"})
+        job["status"] = "error"
 
 
 @app.route("/")

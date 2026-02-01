@@ -270,20 +270,17 @@ function connectSSE(jobId) {
         log(d.message, 'info');
     });
 
-    es.addEventListener('playlist', e => {
-        const d = JSON.parse(e.data);
-        log('Найдено видео: ' + d.total, 'info');
-        d.videos.forEach((v, i) => log('  ' + (i + 1) + '. ' + v));
-    });
-
     es.addEventListener('progress', e => {
         const d = JSON.parse(e.data);
-        document.getElementById('status-text').textContent = d.title;
-        document.getElementById('counter-text').textContent = d.current + ' / ' + d.total;
-
-        // Overall progress: completed videos + current video progress
-        const overallPct = ((d.current - 1) / d.total * 100) + (d.percent / d.total);
-        document.getElementById('progress-bar').style.width = overallPct.toFixed(1) + '%';
+        document.getElementById('status-text').textContent = d.title || ('Видео ' + d.current);
+        if (d.total > 0) {
+            document.getElementById('counter-text').textContent = d.current + ' / ' + d.total;
+            const overallPct = ((d.current - 1) / d.total * 100) + (d.percent / d.total);
+            document.getElementById('progress-bar').style.width = overallPct.toFixed(1) + '%';
+        } else {
+            document.getElementById('counter-text').textContent = 'Видео ' + d.current;
+            document.getElementById('progress-bar').style.width = d.percent.toFixed(1) + '%';
+        }
 
         if (d.detail) {
             const lastLog = document.querySelector('#log-box .entry:last-child');
@@ -302,7 +299,8 @@ function connectSSE(jobId) {
 
     es.addEventListener('video_done', e => {
         const d = JSON.parse(e.data);
-        log(d.title + ' — скачано', 'ok');
+        const label = d.total > 0 ? ` (${d.current}/${d.total})` : '';
+        log(d.title + ' — скачано' + label, 'ok');
     });
 
     es.addEventListener('video_error', e => {
