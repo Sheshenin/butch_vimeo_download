@@ -54,12 +54,12 @@ def run_download(job_id, url, password=None):
     # Step 1: get list of videos
     send("status", {"message": "Получаю список видео из showcase..."})
 
-    list_cmd = ["yt-dlp", "--dump-single-json", "--flat-playlist", url]
+    list_cmd = ["yt-dlp", "--dump-single-json", url]
     if password:
         list_cmd.extend(["--video-password", password])
 
     try:
-        result = subprocess.run(list_cmd, capture_output=True, text=True, timeout=120)
+        result = subprocess.run(list_cmd, capture_output=True, text=True, timeout=600)
     except subprocess.TimeoutExpired:
         send("job_error", {"message": "Таймаут при получении списка видео"})
         send("done", {"message": "Завершено с ошибкой"})
