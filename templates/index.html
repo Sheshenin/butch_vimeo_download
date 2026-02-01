@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vimeo Showcase Downloader</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0a0a0a;
+            color: #e0e0e0;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 40px 20px;
+        }
+
+        h1 {
+            font-size: 28px;
+            margin-bottom: 8px;
+            color: #fff;
+        }
+
+        .subtitle {
+            color: #888;
+            margin-bottom: 32px;
+            font-size: 14px;
+        }
+
+        .card {
+            background: #161616;
+            border: 1px solid #2a2a2a;
+            border-radius: 12px;
+            padding: 28px;
+            width: 100%;
+            max-width: 640px;
+            margin-bottom: 24px;
+        }
+
+        label {
+            display: block;
+            font-size: 13px;
+            color: #aaa;
+            margin-bottom: 6px;
+            font-weight: 500;
+        }
+
+        input[type="text"], input[type="password"] {
+            width: 100%;
+            padding: 12px 14px;
+            background: #0d0d0d;
+            border: 1px solid #333;
+            border-radius: 8px;
+            color: #fff;
+            font-size: 15px;
+            outline: none;
+            transition: border-color 0.2s;
+            margin-bottom: 16px;
+        }
+
+        input:focus { border-color: #1a8cff; }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 12px 24px;
+            background: #1a8cff;
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+            width: 100%;
+            justify-content: center;
+        }
+
+        .btn:hover { background: #0070e0; }
+        .btn:disabled { background: #333; cursor: not-allowed; color: #777; }
+
+        .btn-cancel {
+            background: #c0392b;
+            margin-top: 12px;
+        }
+        .btn-cancel:hover { background: #a93226; }
+
+        /* Progress */
+        #progress-section { display: none; }
+
+        .progress-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+
+        .progress-bar-bg {
+            width: 100%;
+            height: 8px;
+            background: #222;
+            border-radius: 4px;
+            overflow: hidden;
+            margin-bottom: 16px;
+        }
+
+        .progress-bar {
+            height: 100%;
+            background: #1a8cff;
+            border-radius: 4px;
+            transition: width 0.3s ease;
+            width: 0%;
+        }
+
+        .status-text {
+            font-size: 14px;
+            color: #ccc;
+            margin-bottom: 8px;
+        }
+
+        .log-box {
+            background: #0d0d0d;
+            border: 1px solid #222;
+            border-radius: 8px;
+            padding: 12px;
+            max-height: 300px;
+            overflow-y: auto;
+            font-family: 'SF Mono', 'Fira Code', monospace;
+            font-size: 12px;
+            line-height: 1.6;
+            color: #999;
+        }
+
+        .log-box .entry { margin-bottom: 2px; }
+        .log-box .entry.ok { color: #27ae60; }
+        .log-box .entry.err { color: #e74c3c; }
+        .log-box .entry.info { color: #3498db; }
+
+        /* Files list */
+        #files-section { display: none; }
+
+        .file-list { list-style: none; }
+        .file-list li {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 0;
+            border-bottom: 1px solid #222;
+            font-size: 14px;
+        }
+        .file-list li:last-child { border-bottom: none; }
+        .file-list a {
+            color: #1a8cff;
+            text-decoration: none;
+            font-weight: 500;
+        }
+        .file-list a:hover { text-decoration: underline; }
+        .file-size { color: #666; font-size: 12px; }
+
+        .done-msg {
+            text-align: center;
+            font-size: 16px;
+            color: #27ae60;
+            font-weight: 600;
+            margin-bottom: 16px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Vimeo Showcase Downloader</h1>
+    <p class="subtitle">Вставьте ссылку на Vimeo showcase для скачивания всех видео</p>
+
+    <!-- Input form -->
+    <div class="card" id="form-card">
+        <label for="url">Ссылка на showcase</label>
+        <input type="text" id="url" placeholder="https://vimeo.com/showcase/12345678" autofocus>
+
+        <label for="password">Пароль (если есть)</label>
+        <input type="password" id="password" placeholder="Необязательно">
+
+        <button class="btn" id="start-btn" onclick="startDownload()">Начать скачивание</button>
+    </div>
+
+    <!-- Progress -->
+    <div class="card" id="progress-section">
+        <div class="progress-header">
+            <span class="status-text" id="status-text">Подготовка...</span>
+            <span class="status-text" id="counter-text"></span>
+        </div>
+        <div class="progress-bar-bg">
+            <div class="progress-bar" id="progress-bar"></div>
+        </div>
+        <div class="log-box" id="log-box"></div>
+        <button class="btn btn-cancel" id="cancel-btn" onclick="cancelDownload()">Отменить</button>
+    </div>
+
+    <!-- Files -->
+    <div class="card" id="files-section">
+        <div class="done-msg" id="done-msg"></div>
+        <ul class="file-list" id="file-list"></ul>
+        <button class="btn" style="margin-top: 16px;" onclick="resetForm()">Скачать другой showcase</button>
+    </div>
+
+<script>
+let currentJobId = null;
+let eventSource = null;
+
+function log(text, cls = '') {
+    const box = document.getElementById('log-box');
+    const div = document.createElement('div');
+    div.className = 'entry ' + cls;
+    div.textContent = text;
+    box.appendChild(div);
+    box.scrollTop = box.scrollHeight;
+}
+
+function startDownload() {
+    const url = document.getElementById('url').value.trim();
+    const password = document.getElementById('password').value.trim();
+
+    if (!url) {
+        alert('Введите ссылку на showcase');
+        return;
+    }
+
+    document.getElementById('start-btn').disabled = true;
+    document.getElementById('form-card').style.display = 'none';
+    document.getElementById('progress-section').style.display = 'block';
+    document.getElementById('files-section').style.display = 'none';
+    document.getElementById('log-box').innerHTML = '';
+    document.getElementById('progress-bar').style.width = '0%';
+    document.getElementById('status-text').textContent = 'Подключение...';
+    document.getElementById('counter-text').textContent = '';
+
+    fetch('/api/download', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url, password: password || null }),
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.error) {
+            alert(data.error);
+            resetForm();
+            return;
+        }
+        currentJobId = data.job_id;
+        connectSSE(data.job_id);
+    })
+    .catch(err => {
+        alert('Ошибка: ' + err.message);
+        resetForm();
+    });
+}
+
+function connectSSE(jobId) {
+    const es = new EventSource('/api/stream/' + jobId);
+    eventSource = es;
+
+    es.addEventListener('status', e => {
+        const d = JSON.parse(e.data);
+        document.getElementById('status-text').textContent = d.message;
+        log(d.message, 'info');
+    });
+
+    es.addEventListener('playlist', e => {
+        const d = JSON.parse(e.data);
+        log('Найдено видео: ' + d.total, 'info');
+        d.videos.forEach((v, i) => log('  ' + (i + 1) + '. ' + v));
+    });
+
+    es.addEventListener('progress', e => {
+        const d = JSON.parse(e.data);
+        document.getElementById('status-text').textContent = d.title;
+        document.getElementById('counter-text').textContent = d.current + ' / ' + d.total;
+
+        // Overall progress: completed videos + current video progress
+        const overallPct = ((d.current - 1) / d.total * 100) + (d.percent / d.total);
+        document.getElementById('progress-bar').style.width = overallPct.toFixed(1) + '%';
+
+        if (d.detail) {
+            const lastLog = document.querySelector('#log-box .entry:last-child');
+            if (lastLog && lastLog.dataset.type === 'pct') {
+                lastLog.textContent = d.detail;
+            } else {
+                const div = document.createElement('div');
+                div.className = 'entry';
+                div.dataset.type = 'pct';
+                div.textContent = d.detail;
+                document.getElementById('log-box').appendChild(div);
+            }
+            document.getElementById('log-box').scrollTop = document.getElementById('log-box').scrollHeight;
+        }
+    });
+
+    es.addEventListener('video_done', e => {
+        const d = JSON.parse(e.data);
+        log(d.title + ' — скачано', 'ok');
+    });
+
+    es.addEventListener('video_error', e => {
+        const d = JSON.parse(e.data);
+        log(d.title + ' — ошибка: ' + (d.message || ''), 'err');
+    });
+
+    es.addEventListener('log', e => {
+        const d = JSON.parse(e.data);
+        log(d.message);
+    });
+
+    es.addEventListener('error_event', e => {
+        const d = JSON.parse(e.data);
+        log('ОШИБКА: ' + d.message, 'err');
+    });
+
+    es.addEventListener('done', e => {
+        const d = JSON.parse(e.data);
+        es.close();
+        eventSource = null;
+        document.getElementById('progress-bar').style.width = '100%';
+        document.getElementById('cancel-btn').style.display = 'none';
+        log(d.message, 'ok');
+
+        // Load files
+        loadFiles(jobId, d.message);
+    });
+
+    es.addEventListener('ping', () => {});
+
+    es.onerror = () => {
+        // SSE reconnect handled by browser; ignore transient errors
+    };
+}
+
+function loadFiles(jobId, doneMessage) {
+    fetch('/api/files/' + jobId)
+    .then(r => r.json())
+    .then(data => {
+        if (data.files && data.files.length > 0) {
+            document.getElementById('files-section').style.display = 'block';
+            document.getElementById('done-msg').textContent = doneMessage;
+            const list = document.getElementById('file-list');
+            list.innerHTML = '';
+            data.files.forEach(f => {
+                const li = document.createElement('li');
+                const a = document.createElement('a');
+                a.href = '/downloads/' + jobId + '/' + encodeURIComponent(f.name);
+                a.textContent = f.name;
+                a.download = f.name;
+                const span = document.createElement('span');
+                span.className = 'file-size';
+                span.textContent = formatSize(f.size);
+                li.appendChild(a);
+                li.appendChild(span);
+                list.appendChild(li);
+            });
+        }
+    });
+}
+
+function formatSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+    if (bytes < 1073741824) return (bytes / 1048576).toFixed(1) + ' MB';
+    return (bytes / 1073741824).toFixed(2) + ' GB';
+}
+
+function cancelDownload() {
+    if (currentJobId) {
+        fetch('/api/cancel/' + currentJobId, { method: 'POST' });
+    }
+    if (eventSource) {
+        eventSource.close();
+        eventSource = null;
+    }
+    resetForm();
+}
+
+function resetForm() {
+    document.getElementById('form-card').style.display = 'block';
+    document.getElementById('progress-section').style.display = 'none';
+    document.getElementById('files-section').style.display = 'none';
+    document.getElementById('start-btn').disabled = false;
+    document.getElementById('cancel-btn').style.display = 'block';
+    document.getElementById('log-box').innerHTML = '';
+    currentJobId = null;
+}
+
+// Allow Enter key to start download
+document.getElementById('url').addEventListener('keydown', e => {
+    if (e.key === 'Enter') startDownload();
+});
+document.getElementById('password').addEventListener('keydown', e => {
+    if (e.key === 'Enter') startDownload();
+});
+</script>
+</body>
+</html>
